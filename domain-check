@@ -6,7 +6,7 @@
 # can be run in interactive and batch mode, and provides faciltities
 # to alarm if a domain is about to expire.
 #
-# Current Version: 1.5
+# Current Version: 1.7
 #
 # Copyright (C) 2012 Francois Marier <francois@fmarier.org>
 #                2007 Matty <matty91 at gmail dot com>
@@ -49,9 +49,9 @@ WHOIS_SERVER="whois.internic.org"
 AWK="/usr/bin/awk"
 WHOIS="/usr/bin/whois"
 DATE="/bin/date"
-
+CUT="/usr/bin/cut"
 # Place to stash temporary files
-WHOIS_TMP="`mktemp`"
+WHOIS_TMP="/var/tmp/whois.$$"
 
 errorexit()
 {
@@ -149,14 +149,79 @@ tolower()
 ##################################################################
 check_domain_status() 
 {
+    # Avoid WHOIS LIMIT EXCEEDED - slowdown our whois client by adding 3 sec 
+    sleep 3
     # Save the domain since set will trip up the ordering
     DOMAIN=${1}
- 
+
+    # check for country domain eg: .com.my
+    TLDTYPE2="`echo ${DOMAIN} | cut -d '.' -f3 | tr '[A-Z]' '[a-z]'`"
+    if [ "${TLDTYPE2}" == "" ];
+    then
+        TLDTYPE="`echo ${DOMAIN} | cut -d '.' -f2 | tr '[A-Z]' '[a-z]'`" 
+    else
+        TLDTYPE="$TLDTYPE2" 
+    fi
+
     # Invoke whois to find the domain registrar and expiration date
-    ${WHOIS} -h ${WHOIS_SERVER} "=${1}" > ${WHOIS_TMP}
+    #${WHOIS} -h ${WHOIS_SERVER} "=${1}" > ${WHOIS_TMP}
+    # Let whois select server 
+    if [ "${TLDTYPE}"  == "org" ];
+    then
+        ${WHOIS} -h "whois.pir.org" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "ca" ];
+    then
+        ${WHOIS} -h "whois.cira.ca" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "gov" ];
+    then
+        ${WHOIS} -h "whois.dotgov.gov" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "nl" ];
+    then
+        ${WHOIS} -h "whois.domain-registry.nl" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "uk" ];
+    then
+        ${WHOIS} -h "whois.nic.uk" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "hk" ];
+    then
+        ${WHOIS} -h "whois.hkirc.hk" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "in" ];
+    then
+        ${WHOIS} -h "whois.registry.in" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "biz" ];
+    then
+        ${WHOIS} -h "whois.neulevel.biz" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "info" ];
+    then
+        ${WHOIS} -h "whois.afilias.info" "${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "com" -o "${TLDTYPE}"  == "net" -o "${TLDTYPE}"  == "edu" ];
+    then
+	${WHOIS} -h ${WHOIS_SERVER} "=${1}" > ${WHOIS_TMP}
+    elif [ "${TLDTYPE}"  == "my" ];
+    then
+        ${WHOIS} -h "whois.mynic.net.my" "${1}" > ${WHOIS_TMP}
+    else
+	${WHOIS} "${1}" > ${WHOIS_TMP}
+    fi
 
     # Parse out the expiration date and registrar -- uses the last registrar it finds
-    REGISTRAR=`cat ${WHOIS_TMP} | ${AWK} -F: '/Registrar/ && $2 != ""  { REGISTRAR=substr($2,2,17) } END { print REGISTRAR }'`
+
+    if [ "${TLDTYPE}"  == "my" ];
+    then
+        REGISTRAR=`cat ${WHOIS_TMP} | ${AWK} '/Registrant MYNIC Handle/' | sed 's/\][ ]*/\] /g' | cut -d ' ' -f5`
+    elif [ "${TLDTYPE}"  == "ca" ]
+    then
+    	REGISTRAR=`cat ${WHOIS_TMP} | ${AWK} '/Registrar:/ {print "UNKNOWN"}'`
+    elif [ "${TLDTYPE}"  == "uk" ]
+    then
+    	# TODO: grab line after "Registrar:" and print output in comment snippet
+    	REGISTRAR=`cat ${WHOIS_TMP} | ${AWK} '/Registrant type:/ {print "UNKNOWN"}'`
+    elif [ "${TLDTYPE}"  == "hk" ]
+    then
+    	REGISTRAR=`cat ${WHOIS_TMP} | ${AWK} '/Registrar Name:/ {print $3}'`
+    else
+        REGISTRAR=`cat ${WHOIS_TMP} | ${AWK} -F: '/Registrar/ && $2 != ""  { REGISTRAR=substr($2,2,17) } END { print REGISTRAR }'`
+    fi
+
 
     # If the Registrar is NULL, then we didn't get any data
     if [ "${REGISTRAR}" = "" ]
@@ -166,8 +231,31 @@ check_domain_status()
     fi
 
     # The whois Expiration data should resemble teh following: "Expiration Date: 09-may-2008"
-    DOMAINDATE=`cat ${WHOIS_TMP} | ${AWK} '/Expiration/ { print $NF }'`
 
+    # for .in, .info, .org domains
+    if [ "${TLDTYPE}" == "in" -o "${TLDTYPE}" == "info" -o "${TLDTYPE}" == "org" ];
+    then
+	    DOMAINDATE=`cat ${WHOIS_TMP} | ${AWK} '/Expiration Date:/ { print $2 }' | cut -d':' -f2`
+    elif [ "${TLDTYPE}" == "ca" ]; # for .uk domain
+    then
+            DOMAINDATE=`cat ${WHOIS_TMP} | awk '/Expiry date:/ { print $3 }'`
+    elif [ "${TLDTYPE}" == "uk" ]; # for .uk domain
+    then
+            DOMAINDATE=`cat ${WHOIS_TMP} | awk '/Expiry date:/ { print $3 }'`
+    elif [ "${TLDTYPE}" == "hk" ]; # for .hk domain
+    then
+            DOMAINDATE=`cat ${WHOIS_TMP} | awk '/Expiry Date:/ { print $3 }'`
+    elif [ "${TLDTYPE}" == "biz" ]; # for .biz domain
+    then
+            DOMAINDATE=`cat ${WHOIS_TMP} | awk '/Domain Expiration Date:/ { print $6"-"$5"-"$9 }'`
+    elif [ "${TLDTYPE}" == "my"  ]; # for .my domain
+    then
+            DOMAINDATE=`cat ${WHOIS_TMP} | awk '/\[Record Expired\]/' | sed 's/\][ ]*/\] /g' | cut -d ' ' -f4`
+    else # .com, .edu, .net and may work with others	 
+	    DOMAINDATE=`cat ${WHOIS_TMP} | ${AWK} '/Expiration/ { print $NF }'`	
+    fi
+
+    #echo $DOMAINDATE # debug 
     # Whois data should be in the following format: "13-feb-2006"
     IFS="-"
     set -- ${DOMAINDATE}
